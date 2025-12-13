@@ -1,8 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["library/boa-core"]
+members = ["boa-server","library/boa-core"]
 
 [workspace.dependencies]
+boa-core = { path = "./library/boa-core/" }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
