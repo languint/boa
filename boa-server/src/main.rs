@@ -1,3 +1,5 @@
+mod routes;
+
 use std::env;
 
 use axum::{Router, routing::get};
@@ -21,7 +23,9 @@ async fn main() -> Result<(), String> {
 
     let server_url = format!("0.0.0.0:{server_port}");
 
-    let router = Router::new().route("/", get(|| async { "Hello world!" }));
+    let router = Router::new()
+        .route("/", get(|| async { "Hello world!" }))
+        .route("/ws", get(routes::ws::ws_handler));
 
     let listener = match TcpListener::bind(&server_url).await {
         Ok(listener) => listener,
