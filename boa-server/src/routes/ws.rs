@@ -1,75 +1,103 @@
+use std::sync::Arc;
+
 use axum::{
     extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade},
     response::IntoResponse,
 };
 use axum_extra::{TypedHeader, headers::UserAgent};
 use boa_core::packets::client::ClientPacket;
+use owo_colors::Style;
 
-pub async fn ws_handler(
-    ws: WebSocketUpgrade,
-    user_agent: Option<TypedHeader<UserAgent>>,
-) -> impl IntoResponse {
-    if let Some(TypedHeader(user_agent)) = user_agent {
-        println!("`{}` connected", user_agent.as_str());
-    }
+use crate::logger::Logger;
 
-    ws.on_upgrade(handle_socket)
+pub struct BoaWsRoute {
+    logger: Arc<Logger>,
 }
 
-async fn handle_socket(mut socket: WebSocket) {
-    while let Some(msg) = socket.recv().await {
-        if let Ok(msg) = msg {
-            match msg {
-                Message::Text(t) => {
-                    println!("[boa-server~/ws]: recieved text data {t:?}");
-
-                    match serde_json::from_str::<ClientPacket>(&t) {
-                        Ok(json) => {
-                            println!("[boa-server~/ws]: recieved client packet {json:?}");
-                        }
-                        Err(e) => {
-                            eprintln!("[boa-server~/ws]: recieved invalid json: {e}!");
-                            match socket
-                                .send(Message::Close(Some(CloseFrame {
-                                    code: 1007,
-                                    reason: Utf8Bytes::from(e.to_string()),
-                                })))
-                                .await
-                            {
-                                Ok(_) => {
-                                    println!("[boa-server~/ws]: sent close frame with code 400");
-                                    break;
-                                }
-                                Err(e) => {
-                                    eprintln!("[boa-server~/ws]: failed to send close frame: {e}!");
-                                    break;
-                                }
-                            };
-                        }
-                    }
-                }
-                Message::Binary(b) => {
-                    println!("[boa-server~/ws]: recieved binary data {b:?}");
-                }
-                Message::Ping(p) => {
-                    println!("[boa-server~/ws]: recieved ping request {p:?}");
-                    if socket.send(Message::Pong(p)).await.is_err() {
-                        break;
-                    }
-                }
-                Message::Pong(_) => {
-                    println!("[boa-server~/ws]: recieved pong, ignoring");
-                }
-                Message::Close(_) => {
-                    println!("[boa-server~/ws]: recieved close, ignoring");
-                }
-            }
-        } else {
-            eprintln!("[boa-server~/ws]: failed to read msg: {}!", unsafe {
-                msg.unwrap_err_unchecked()
-            });
+impl BoaWsRoute {
+    pub fn new() -> BoaWsRoute {
+        BoaWsRoute {
+            logger: Arc::new(Logger::new("boa-server~/ws".to_string())),
         }
     }
+}
 
-    println!("[boa-server~/ws]: connection closed");
+impl BoaWsRoute {
+    pub async fn ws_handler(self: Arc<Self>, ws: WebSocketUpgrade) -> impl IntoResponse {
+        self.logger.log("new connection opened", "");
+
+        ws.on_upgrade(move |socket| {
+            let this = Arc::clone(&self);
+            async move { this.handle_socket(socket).await }
+        })
+    }
+
+    async fn handle_socket(&self, mut socket: WebSocket) {
+        while let Some(msg) = socket.recv().await {
+            if let Ok(msg) = msg {
+                match msg {
+                    Message::Text(t) => {
+                        self.logger.log(format!("recieved text data {t:?}"), "");
+
+                        match serde_json::from_str::<ClientPacket>(&t) {
+                            Ok(json) => {
+                                self.logger
+                                    .log(format!("recieved client packet {json:?}!"), "");
+                            }
+                            Err(e) => {
+                                self.logger.err(format!("recieved invalid json {e}!"), "~!");
+                                match socket
+                                    .send(Message::Close(Some(CloseFrame {
+                                        code: 1007,
+                                        reason: Utf8Bytes::from(e.to_string()),
+                                    })))
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        self.logger.log_style(
+                                            "sent close frame with code 1007",
+                                            Style::new().bright_yellow(),
+                                            "",
+                                        );
+
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        self.logger
+                                            .err(format!("failed to send close frame: {e}!"), "~!");
+                                        break;
+                                    }
+                                };
+                            }
+                        }
+                    }
+                    Message::Binary(b) => {
+                        self.logger.log(format!("recieved binary data {b:?}"), "");
+                    }
+                    Message::Ping(p) => {
+                        self.logger.log(format!("recieved ping {p:?}"), "");
+                        if socket.send(Message::Pong(p)).await.is_err() {
+                            self.logger.err(format!("failed to send pong!"), "~!");
+                            break;
+                        }
+                    }
+                    Message::Pong(_) => {
+                        self.logger.log("recieved pong, ignoring", "");
+                    }
+                    Message::Close(_) => {
+                        self.logger.log("recieved close, ignoring", "");
+                    }
+                }
+            } else {
+                self.logger.err(
+                    format!("[boa-server~/ws]: failed to read msg: {}!", unsafe {
+                        msg.unwrap_err_unchecked()
+                    },),
+                    "~!",
+                );
+            }
+        }
+
+        self.logger.log("connection closed", "");
+    }
 }

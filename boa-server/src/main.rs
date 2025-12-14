@@ -1,23 +1,50 @@
+mod container;
+mod logger;
 mod routes;
+mod state;
 
-use std::env;
+use std::{env, process::exit, sync::Arc};
 
 use axum::{Router, routing::get};
+use bollard::Docker;
+use owo_colors::Style;
 use tokio::net::TcpListener;
 
+use crate::logger::Logger;
+
 #[tokio::main]
-async fn main() -> Result<(), String> {
+async fn main() {
+    let logger = Logger::new("boa-server".to_string());
+
     let server_port = match env::var("BOA_SERVER_PORT") {
         Ok(port) => port,
-        Err(e) => return Err(format!("Failed to read BOA_SERVER_PORT: {e}!")),
+        Err(e) => {
+            logger.err(format!("failed to read BOA_SERVER_PORT: {e}!"), "~!");
+            exit(1);
+        }
     };
 
     let server_port = match server_port.parse::<u32>() {
         Ok(port) => port,
         Err(e) => {
-            return Err(format!(
-                "Failed to parse BOA_SERVER_PORT as a valid port: {e}!"
-            ));
+            logger.err("failed to parse BOA_SERVER_PORT!", "~!");
+            exit(1);
+        }
+    };
+
+    let docker = match Docker::connect_with_local_defaults() {
+        Ok(docker) => docker,
+        Err(e) => {
+            logger.err(&format!("failed to connect to docker daemon: {e}!"), "");
+            exit(1);
+        }
+    };
+
+    let container_prefix = match env::var("BOA_CONTAINER_PREFIX") {
+        Ok(container_name) => container_name,
+        Err(e) => {
+            logger.err(format!("failed to read BOA_CONTAINER_PREFIX: {e}!"), "");
+            exit(1);
         }
     };
 
@@ -25,18 +52,40 @@ async fn main() -> Result<(), String> {
 
     let router = Router::new()
         .route("/", get(|| async { "Hello world!" }))
-        .route("/ws", get(routes::ws::ws_handler));
+        .route(
+            "/ws",
+            get(|ws| {
+                let route = Arc::new(routes::ws::BoaWsRoute::new());
+
+                return route.ws_handler(ws);
+            }),
+        );
 
     let listener = match TcpListener::bind(&server_url).await {
         Ok(listener) => listener,
-        Err(e) => return Err(format!("Failed to bind TCP listener to {server_url}: {e}!")),
+        Err(e) => {
+            logger.err(
+                format!("failed to bind TCP listener to {server_url}: {e}!"),
+                "",
+            );
+            exit(1);
+        }
     };
 
-    println!("[boa-server] listening on {server_url}");
+    logger.log_style(
+        format!("server listening on {server_url}"),
+        Style::new().bright_green(),
+        "",
+    );
 
-    axum::serve(listener, router)
-        .await
-        .map_err(|e| format!("Failed to serve router: {e}!"))?;
-
-    Ok(())
+    match axum::serve(listener, router).await {
+        Ok(_) => {
+            logger.log("all done, exiting", "");
+            exit(0);
+        }
+        Err(e) => {
+            logger.err(format!("failed to serve router: {e}!"), "");
+            exit(1);
+        }
+    }
 }
