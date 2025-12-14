@@ -4,20 +4,21 @@ use axum::{
     extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade},
     response::IntoResponse,
 };
-use axum_extra::{TypedHeader, headers::UserAgent};
 use boa_core::packets::client::ClientPacket;
 use owo_colors::Style;
 
-use crate::logger::Logger;
+use crate::{logger::Logger, state::ShareableServerState};
 
 pub struct BoaWsRoute {
     logger: Arc<Logger>,
+    server_state: ShareableServerState,
 }
 
 impl BoaWsRoute {
-    pub fn new() -> BoaWsRoute {
+    pub fn new(server_state: ShareableServerState) -> BoaWsRoute {
         BoaWsRoute {
             logger: Arc::new(Logger::new("boa-server~/ws".to_string())),
+            server_state,
         }
     }
 }
@@ -99,5 +100,11 @@ impl BoaWsRoute {
         }
 
         self.logger.log("connection closed", "");
+    }
+}
+
+impl BoaWsRoute {
+    fn handle_client_packet(packet: ClientPacket) -> Result<(), String> {
+        Ok(())
     }
 }

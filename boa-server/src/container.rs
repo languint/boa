@@ -1,10 +1,12 @@
 use bollard::{
     Docker, query_parameters::CreateContainerOptionsBuilder, secret::ContainerCreateBody,
 };
+use owo_colors::OwoColorize;
 use uuid::Uuid;
 
 use crate::logger::Logger;
 
+#[derive(Clone)]
 pub struct BoaContainer {
     logger: Logger,
     container_id: String,
@@ -15,6 +17,8 @@ impl BoaContainer {
         let container_name = format!("{container_prefix}-{}", Uuid::new_v4());
 
         let logger = Logger::new(format!("[boa-server#.{container_name}]"));
+
+        logger.log("creating new container", "");
 
         let container_options = CreateContainerOptionsBuilder::new()
             .name(&container_prefix)
@@ -42,6 +46,8 @@ impl BoaContainer {
             .create_container(Some(container_options), container_create)
             .await
             .map_err(|e| format!("failed to create new docker container {container_name}: {e}!"))?;
+
+        logger.log(format!("created new runner {}", container_name.bold()), "");
 
         Ok(BoaContainer {
             logger,

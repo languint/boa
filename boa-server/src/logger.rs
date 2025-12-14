@@ -1,5 +1,6 @@
 use owo_colors::{OwoColorize, Style};
 
+#[derive(Clone)]
 pub struct Logger {
     pub prefix: String,
 }

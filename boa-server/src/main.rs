@@ -8,9 +8,9 @@ use std::{env, process::exit, sync::Arc};
 use axum::{Router, routing::get};
 use bollard::Docker;
 use owo_colors::Style;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::Mutex};
 
-use crate::logger::Logger;
+use crate::{logger::Logger, state::ServerState};
 
 #[tokio::main]
 async fn main() {
@@ -32,14 +32,6 @@ async fn main() {
         }
     };
 
-    let docker = match Docker::connect_with_local_defaults() {
-        Ok(docker) => docker,
-        Err(e) => {
-            logger.err(&format!("failed to connect to docker daemon: {e}!"), "");
-            exit(1);
-        }
-    };
-
     let container_prefix = match env::var("BOA_CONTAINER_PREFIX") {
         Ok(container_name) => container_name,
         Err(e) => {
@@ -48,6 +40,16 @@ async fn main() {
         }
     };
 
+    let docker = match Docker::connect_with_local_defaults() {
+        Ok(docker) => docker,
+        Err(e) => {
+            logger.err(&format!("failed to connect to docker daemon: {e}!"), "");
+            exit(1);
+        }
+    };
+
+    let server_state = Arc::new(Mutex::new(ServerState::new(docker)));
+
     let server_url = format!("0.0.0.0:{server_port}");
 
     let router = Router::new()
@@ -55,7 +57,7 @@ async fn main() {
         .route(
             "/ws",
             get(|ws| {
-                let route = Arc::new(routes::ws::BoaWsRoute::new());
+                let route = Arc::new(routes::ws::BoaWsRoute::new(server_state));
 
                 return route.ws_handler(ws);
             }),

@@ -1,16 +1,23 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
+use bollard::Docker;
 use tokio::sync::Mutex;
+
+use crate::container::BoaContainer;
+
+pub type ShareableServerState = Arc<Mutex<ServerState>>;
 
 #[derive(Clone)]
 pub struct ServerState {
-    pub containers: Arc<Mutex<HashMap<String, String>>>,
+    pub containers: Vec<BoaContainer>,
+    pub docker: Docker,
 }
 
 impl ServerState {
-    pub fn new() -> Self {
+    pub fn new(docker: Docker) -> Self {
         Self {
-            containers: Arc::new(Mutex::new(HashMap::new())),
+            containers: vec![],
+            docker,
         }
     }
 }
