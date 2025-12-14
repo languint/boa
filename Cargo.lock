@@ -120,6 +120,7 @@ dependencies = [
  "axum",
  "axum-extra",
  "boa-core",
+ "serde_json",
  "tokio",
 ]
 

@@ -1,8 +1,9 @@
 use axum::{
-    extract::ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade},
+    extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade},
     response::IntoResponse,
 };
 use axum_extra::{TypedHeader, headers::UserAgent};
+use boa_core::packets::client::ClientPacket;
 
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
@@ -22,16 +23,33 @@ async fn handle_socket(mut socket: WebSocket) {
                 Message::Text(t) => {
                     println!("[boa-server~/ws]: recieved text data {t:?}");
 
-                    if let Err(e) = socket
-                        .send(Message::Text(Utf8Bytes::from(format!("Echo: {}", t))))
-                        .await
-                    {
-                        eprintln!("[boa-server~/ws]: connection error: {e}!");
-                        break;
+                    match serde_json::from_str::<ClientPacket>(&t) {
+                        Ok(json) => {
+                            println!("[boa-server~/ws]: recieved client packet {json:?}");
+                        }
+                        Err(e) => {
+                            eprintln!("[boa-server~/ws]: recieved invalid json: {e}!");
+                            match socket
+                                .send(Message::Close(Some(CloseFrame {
+                                    code: 1007,
+                                    reason: Utf8Bytes::from(e.to_string()),
+                                })))
+                                .await
+                            {
+                                Ok(_) => {
+                                    println!("[boa-server~/ws]: sent close frame with code 400");
+                                    break;
+                                }
+                                Err(e) => {
+                                    eprintln!("[boa-server~/ws]: failed to send close frame: {e}!");
+                                    break;
+                                }
+                            };
+                        }
                     }
                 }
                 Message::Binary(b) => {
-                    println!("[boa-server~/ws]: recieved binary data {b:?}")
+                    println!("[boa-server~/ws]: recieved binary data {b:?}");
                 }
                 Message::Ping(p) => {
                     println!("[boa-server~/ws]: recieved ping request {p:?}");
