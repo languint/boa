@@ -136,6 +136,7 @@ dependencies = [
  "axum-extra",
  "boa-core",
  "bollard",
+ "futures-util",
  "owo-colors",
  "serde_json",
  "tokio",

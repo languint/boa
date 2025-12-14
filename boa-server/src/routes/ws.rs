@@ -4,6 +4,7 @@ use axum::{
     extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade},
     response::IntoResponse,
 };
+
 use boa_core::packets::{
     client::ClientPacket,
     server::{
@@ -12,7 +13,8 @@ use boa_core::packets::{
         process::{ProcessCloseResultPacket, ProcessOpenResultPacket},
     },
 };
-use bollard::query_parameters::{RemoveContainerOptions, StopContainerOptions};
+
+use bollard::query_parameters::RemoveContainerOptions;
 use owo_colors::{OwoColorize, Style};
 
 use crate::{container::BoaContainer, logger::Logger, state::ShareableServerState};
