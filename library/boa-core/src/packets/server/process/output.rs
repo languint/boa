@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum OutputPacket {
+pub enum ProcessOutputPacket {
     StdOut(String),
     StdErr(String),
 }

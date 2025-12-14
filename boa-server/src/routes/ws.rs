@@ -6,10 +6,14 @@ use axum::{
 };
 use boa_core::packets::{
     client::ClientPacket,
-    server::{ServerPacket, open_result::OpenResultPacket},
+    server::{
+        ServerPacket,
+        error::{ServerError, ServerErrorPacket},
+        process::{ProcessCloseResultPacket, ProcessOpenResultPacket},
+    },
 };
-use owo_colors::Style;
-use serde_json::Serializer;
+use bollard::query_parameters::{RemoveContainerOptions, StopContainerOptions};
+use owo_colors::{OwoColorize, Style};
 
 use crate::{container::BoaContainer, logger::Logger, state::ShareableServerState};
 
@@ -105,7 +109,7 @@ impl BoaWsRoute {
                 }
             } else {
                 self.logger.err(
-                    format!("[boa-server~/ws]: failed to read msg: {}!", unsafe {
+                    format!("failed to read msg: {}!", unsafe {
                         msg.unwrap_err_unchecked()
                     },),
                     "~!",
@@ -134,7 +138,8 @@ impl BoaWsRoute {
 
                 state.containers.insert(container_id.clone(), container);
 
-                let packet = ServerPacket::OpenResult(OpenResultPacket { container_id });
+                let packet =
+                    ServerPacket::ProcessOpenResult(ProcessOpenResultPacket { container_id });
 
                 let serialized_packet = serde_json::to_string::<ServerPacket>(&packet)
                     .map_err(|e| format!("failed to serialize packet: {e}"))?;
@@ -149,7 +154,64 @@ impl BoaWsRoute {
                     .await
                     .map_err(|e| format!("failed to send open result packet: {e}"))?;
             }
-            ClientPacket::Close(packet) => {}
+            ClientPacket::Close(client_packet) => {
+                let mut state = self.server_state.lock().await;
+
+                if state.containers.contains_key(&client_packet.container_id) {
+                    state.containers.remove(&client_packet.container_id);
+
+                    self.logger.log(
+                        format!(
+                            "recieved packet to stop close {}",
+                            client_packet.container_id.bold()
+                        ),
+                        "",
+                    );
+
+                    let success = state
+                        .docker
+                        .remove_container(
+                            &client_packet.container_id,
+                            Some(RemoveContainerOptions::default()),
+                        )
+                        .await
+                        .is_ok();
+
+                    let packet = serde_json::to_string(&ServerPacket::ProcessCloseResult(
+                        ProcessCloseResultPacket { success },
+                    ))
+                    .map_err(|e| format!("failed to serialize packet: {e}"))?;
+
+                    socket
+                        .send(Message::Text(Utf8Bytes::from(packet)))
+                        .await
+                        .map_err(|e| format!("failed to send error packet: {e}"))?;
+                } else {
+                    let err_packet =
+                        serde_json::to_string(&ServerPacket::ServerError(ServerErrorPacket {
+                            err: ServerError::InvalidContainerId,
+                            message: format!(
+                                "container with id {} was not found",
+                                client_packet.container_id
+                            ),
+                        }))
+                        .map_err(|e| format!("failed to serialize packet: {e}"))?;
+
+                    self.logger.log_style(
+                        format!(
+                            "container with id {} was not found",
+                            client_packet.container_id.bold()
+                        ),
+                        Style::new().bright_yellow(),
+                        "~?",
+                    );
+
+                    socket
+                        .send(Message::Text(Utf8Bytes::from(err_packet)))
+                        .await
+                        .map_err(|e| format!("failed to send error packet: {e}"))?;
+                }
+            }
         }
         Ok(())
     }

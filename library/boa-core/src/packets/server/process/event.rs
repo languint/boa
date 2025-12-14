@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RunnerEventPacket {
+pub enum ProcessEventPacket {
     Started,
     Finished { exit_code: i32 },
     TimedOut,

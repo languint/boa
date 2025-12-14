@@ -23,7 +23,7 @@ impl BoaContainer {
         logger.log("creating new container", "");
 
         let container_options = CreateContainerOptionsBuilder::new()
-            .name(&container_prefix)
+            .name(&container_name)
             .build();
 
         let container_create = ContainerCreateBody {

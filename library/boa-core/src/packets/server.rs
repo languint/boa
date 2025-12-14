@@ -1,21 +1,22 @@
-pub mod open_result;
-pub mod output;
-pub mod runner_event;
-pub mod server_error;
+pub mod error;
+pub mod process;
 
 use serde::{Deserialize, Serialize};
 
 use crate::packets::server::{
-    open_result::OpenResultPacket, output::OutputPacket, runner_event::RunnerEventPacket,
-    server_error::ServerErrorPacket,
+    error::ServerErrorPacket,
+    process::{
+        ProcessCloseResultPacket, ProcessEventPacket, ProcessOpenResultPacket, ProcessOutputPacket,
+    },
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ServerPacket {
-    OpenResult(OpenResultPacket),
+    ProcessOpenResult(ProcessOpenResultPacket),
+    ProcessCloseResult(ProcessCloseResultPacket),
+    ProcessOutput(ProcessOutputPacket),
+    ProcessEvent(ProcessEventPacket),
 
-    Output(OutputPacket),
-    Event(RunnerEventPacket),
-    Error(ServerErrorPacket),
+    ServerError(ServerErrorPacket),
 }
