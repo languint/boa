@@ -1,13 +1,18 @@
+pub mod close;
 pub mod control_signal;
+pub mod open;
 
 use serde::{Deserialize, Serialize};
 
-use crate::packets::client::control_signal::ControlSignalPacket;
+use crate::packets::client::{
+    close::ClosePacket, control_signal::ControlSignalPacket, open::OpenPacket,
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ClientPacket {
     ControlSignal(ControlSignalPacket),
 
-    Close,
+    Open(OpenPacket),
+    Close(ClosePacket),
 }

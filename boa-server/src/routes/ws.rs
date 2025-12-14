@@ -4,10 +4,14 @@ use axum::{
     extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade},
     response::IntoResponse,
 };
-use boa_core::packets::client::ClientPacket;
+use boa_core::packets::{
+    client::ClientPacket,
+    server::{ServerPacket, open_result::OpenResultPacket},
+};
 use owo_colors::Style;
+use serde_json::Serializer;
 
-use crate::{logger::Logger, state::ShareableServerState};
+use crate::{container::BoaContainer, logger::Logger, state::ShareableServerState};
 
 pub struct BoaWsRoute {
     logger: Arc<Logger>,
@@ -44,6 +48,16 @@ impl BoaWsRoute {
                             Ok(json) => {
                                 self.logger
                                     .log(format!("recieved client packet {json:?}!"), "");
+                                match self.handle_client_packet(json, &mut socket).await {
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        self.logger.err(
+                                            format!("failed to handle client packet: {e}!"),
+                                            "",
+                                        );
+                                        break;
+                                    }
+                                };
                             }
                             Err(e) => {
                                 self.logger.err(format!("recieved invalid json {e}!"), "~!");
@@ -104,7 +118,39 @@ impl BoaWsRoute {
 }
 
 impl BoaWsRoute {
-    fn handle_client_packet(packet: ClientPacket) -> Result<(), String> {
+    async fn handle_client_packet(
+        &self,
+        packet: ClientPacket,
+        socket: &mut WebSocket,
+    ) -> Result<(), String> {
+        match packet {
+            ClientPacket::ControlSignal(packet) => {}
+
+            ClientPacket::Open(packet) => {
+                let mut state = self.server_state.lock().await;
+
+                let (container_id, container) =
+                    BoaContainer::new(&state.docker, state.container_prefix.clone()).await?;
+
+                state.containers.insert(container_id.clone(), container);
+
+                let packet = ServerPacket::OpenResult(OpenResultPacket { container_id });
+
+                let serialized_packet = serde_json::to_string::<ServerPacket>(&packet)
+                    .map_err(|e| format!("failed to serialize packet: {e}"))?;
+
+                self.logger.log(
+                    format!("sending packet: {}", serialized_packet.to_string()),
+                    "",
+                );
+
+                socket
+                    .send(Message::Text(Utf8Bytes::from(serialized_packet)))
+                    .await
+                    .map_err(|e| format!("failed to send open result packet: {e}"))?;
+            }
+            ClientPacket::Close(packet) => {}
+        }
         Ok(())
     }
 }

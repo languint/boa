@@ -48,7 +48,11 @@ async fn main() {
         }
     };
 
-    let server_state = Arc::new(Mutex::new(ServerState::new(docker)));
+    let server_state = Arc::new(Mutex::new(ServerState::new(
+        docker,
+        server_port,
+        container_prefix,
+    )));
 
     let server_url = format!("0.0.0.0:{server_port}");
 

@@ -9,11 +9,13 @@ use crate::logger::Logger;
 #[derive(Clone)]
 pub struct BoaContainer {
     logger: Logger,
-    container_id: String,
 }
 
 impl BoaContainer {
-    pub async fn new(docker: &Docker, container_prefix: String) -> Result<BoaContainer, String> {
+    pub async fn new(
+        docker: &Docker,
+        container_prefix: String,
+    ) -> Result<(String, BoaContainer), String> {
         let container_name = format!("{container_prefix}-{}", Uuid::new_v4());
 
         let logger = Logger::new(format!("[boa-server#.{container_name}]"));
@@ -25,7 +27,7 @@ impl BoaContainer {
             .build();
 
         let container_create = ContainerCreateBody {
-            image: Some("python:3-11-alpine".to_string()),
+            image: Some("python:3.11-slim".to_string()),
             tty: Some(true),
             open_stdin: Some(true),
 
@@ -47,11 +49,11 @@ impl BoaContainer {
             .await
             .map_err(|e| format!("failed to create new docker container {container_name}: {e}!"))?;
 
-        logger.log(format!("created new runner {}", container_name.bold()), "");
+        logger.log(
+            format!("created new container {}", container_name.bold()),
+            "",
+        );
 
-        Ok(BoaContainer {
-            logger,
-            container_id: container.id,
-        })
+        Ok((container.id, BoaContainer { logger }))
     }
 }

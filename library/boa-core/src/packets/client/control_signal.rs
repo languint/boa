@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ControlSignal {
     /// Send a SIGINT to the container
     Interrupt,
@@ -8,7 +8,8 @@ pub enum ControlSignal {
     Terminate,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControlSignalPacket {
+    pub container_id: String,
     pub control_signal: ControlSignal,
 }
