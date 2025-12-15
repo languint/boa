@@ -2,15 +2,23 @@ use std::{fs::File, path::Path};
 
 use axum::body::Bytes;
 
+use boa_core::packets::{
+    client::process::ProcessControlSignal,
+    server::{
+        ServerPacket,
+        process::{ProcessEventPacket, ProcessOutputPacket},
+    },
+};
 use futures_util::stream::StreamExt;
 
 use bollard::{
     Docker, body_full,
     exec::{CreateExecOptions, StartExecResults},
     query_parameters::{
-        CreateContainerOptionsBuilder, StartContainerOptions, UploadToContainerOptionsBuilder,
+        CreateContainerOptionsBuilder, InspectContainerOptions, InspectContainerOptionsBuilder,
+        StartContainerOptions, StopContainerOptionsBuilder, UploadToContainerOptionsBuilder,
     },
-    secret::ContainerCreateBody,
+    secret::{ContainerCreateBody, ContainerState, ContainerStateStatusEnum},
 };
 
 use owo_colors::Style;
@@ -97,13 +105,32 @@ impl BoaContainer {
             .await
         {
             Ok(_) => {
-                self.started = true;
                 self.logger.log("started container", "");
             }
             Err(e) => return Err(format!("failed to start container: {e}")),
         };
 
         Ok(())
+    }
+
+    pub async fn signal(
+        &mut self,
+        docker: &Docker,
+        signal: ProcessControlSignal,
+    ) -> Result<(), String> {
+        let signal = match signal {
+            ProcessControlSignal::Interrupt => "SIGINT",
+            ProcessControlSignal::Terminate => "SIGTERM",
+            _ => unreachable!(),
+        };
+
+        docker
+            .stop_container(
+                &self.container_id,
+                Some(StopContainerOptionsBuilder::new().signal(signal).build()),
+            )
+            .await
+            .map_err(|e| format!("failed to stop container: {e}"))
     }
 }
 
@@ -114,7 +141,19 @@ impl BoaContainer {
         file_path: String,
         sender: UnboundedSender<WsOutbound>,
     ) -> Result<i64, String> {
-        if !self.started {
+        let inspect = docker
+            .inspect_container(&self.container_id, None::<InspectContainerOptions>)
+            .await
+            .map_err(|e| format!("failed to inspect container: {e}"))?;
+
+        let is_running = inspect
+            .state
+            .as_ref()
+            .and_then(|s| s.status.as_ref())
+            .map(|status| *status == ContainerStateStatusEnum::RUNNING)
+            .unwrap_or(false);
+
+        if !is_running {
             return Err("container is not started".to_string());
         }
 
@@ -151,12 +190,22 @@ impl BoaContainer {
                         Ok(bollard::container::LogOutput::StdOut { message }) => {
                             let text = String::from_utf8_lossy(&message);
                             self.logger.log(format!("stdout: {text}"), "");
-                            // TODO: send StdOut
+
+                            sender
+                                .send(WsOutbound::Packet(ServerPacket::ProcessOutput(
+                                    ProcessOutputPacket::StdOut(text.to_string()),
+                                )))
+                                .ok();
                         }
                         Ok(bollard::container::LogOutput::StdErr { message }) => {
                             let text = String::from_utf8_lossy(&message);
                             self.logger.log(format!("stderr: {text}"), "");
-                            // TODO: send StdErr
+
+                            sender
+                                .send(WsOutbound::Packet(ServerPacket::ProcessOutput(
+                                    ProcessOutputPacket::StdErr(text.to_string()),
+                                )))
+                                .ok();
                         }
                         _ => {}
                     }
@@ -217,13 +266,13 @@ impl BoaContainer {
                 &self.container_id,
                 Some(
                     UploadToContainerOptionsBuilder::new()
-                        .path(
+                        .path(unsafe {
                             Path::new(container_path)
                                 .parent()
                                 .unwrap_or(Path::new("/"))
                                 .to_str()
-                                .unwrap(),
-                        )
+                                .unwrap_unchecked()
+                        })
                         .build(),
                 ),
                 body_full(tar_data.into()),

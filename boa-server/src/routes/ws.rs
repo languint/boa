@@ -51,7 +51,7 @@ struct UploadState {
 }
 
 impl BoaWsRoute {
-    pub async fn ws_handler(self: Arc<Self>, ws: WebSocketUpgrade) -> impl IntoResponse {
+    pub fn ws_handler(self: Arc<Self>, ws: WebSocketUpgrade) -> impl IntoResponse {
         ws.on_upgrade(move |socket| {
             let this = Arc::clone(&self);
             async move {
@@ -117,7 +117,7 @@ impl BoaWsRoute {
 
                                     let temp_file = tempfile::NamedTempFile::new()
                                         .map_err(|e| e.to_string())
-                                        .unwrap();
+                                        .expect("Temp file creation should always succeed");
 
                                     upload_state = Some(UploadState {
                                         container_id,
@@ -135,21 +135,26 @@ impl BoaWsRoute {
                                             state_lock.containers.get(&state.container_id).cloned()
                                         };
 
-                                        if let Some(container) = container {
-                                            let host_path = state.temp_file.path().to_path_buf();
-                                            let container_path = state.container_path.clone();
+                                        if let Some(state) = upload_state.take() {
+                                            let container = container.clone();
+                                            let docker =
+                                                self.server_state.lock().await.docker.clone();
+                                            let temp_file = state.temp_file; // move the NamedTempFile
+                                            let container_path = state.container_path;
 
                                             tokio::spawn(async move {
                                                 if let Err(e) = container
+                                                    .expect("Container should be valid")
                                                     .upload_file(
                                                         &docker,
-                                                        &host_path,
+                                                        temp_file.path(),
                                                         &container_path,
                                                     )
                                                     .await
                                                 {
                                                     eprintln!("upload failed: {e}");
                                                 }
+                                                // temp_file is dropped here, after upload
                                             });
                                         }
                                     }
@@ -172,7 +177,7 @@ impl BoaWsRoute {
                                     .write(true)
                                     .open(state.temp_file.path())
                                     .await
-                                    .unwrap();
+                                    .expect("Temporary files should always exist");
 
                                 if let Err(e) = file.write_all(&bytes).await {
                                     let _ = packet_tx.send(WsOutbound::Packet(
@@ -259,18 +264,18 @@ impl BoaWsRoute {
 
                         tokio::spawn(async move {
                             match container.start(&docker).await {
-                                Ok(_) => {
-                                    tx.send(WsOutbound::Packet(ServerPacket::ProcessEvent(
-                                        ProcessEventPacket::Started,
-                                    )))
-                                    .ok();
-                                }
                                 Err(e) => {
                                     tx.send(WsOutbound::Packet(ServerPacket::ServerError(
                                         ServerErrorPacket {
                                             err: ServerError::ProcessStartFailed,
                                             message: format!("failed to start: {e}"),
                                         },
+                                    )))
+                                    .ok();
+                                }
+                                _ => {
+                                    tx.send(WsOutbound::Packet(ServerPacket::ProcessEvent(
+                                        ProcessEventPacket::Started,
                                     )))
                                     .ok();
                                 }
@@ -301,18 +306,43 @@ impl BoaWsRoute {
                         // });
                     }
 
-                    // ProcessControlSignal::Interrupt => {
-                    //     container
-                    //         .signal(&docker, ProcessControlSignal::Interrupt)
-                    //         .await?;
-                    // }
+                    ProcessControlSignal::Exec(file_path) => {
+                        let _ = tx.send(WsOutbound::Packet(ServerPacket::ProcessEvent(
+                            ProcessEventPacket::Started,
+                        )));
 
-                    // ProcessControlSignal::Terminate => {
-                    //     container
-                    //         .signal(&docker, ProcessControlSignal::Terminate)
-                    //         .await?;
-                    // }
-                    _ => {}
+                        let docker = docker.clone();
+                        tokio::spawn(async move {
+                            match container.run(&docker, file_path, tx.clone()).await {
+                                Ok(exit_code) => {
+                                    let _ =
+                                        tx.send(WsOutbound::Packet(ServerPacket::ProcessEvent(
+                                            ProcessEventPacket::Finished { exit_code },
+                                        )));
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(WsOutbound::Packet(ServerPacket::ServerError(
+                                        ServerErrorPacket {
+                                            err: ServerError::ProcessStartFailed,
+                                            message: e,
+                                        },
+                                    )));
+                                }
+                            }
+                        });
+                    }
+
+                    ProcessControlSignal::Interrupt => {
+                        container
+                            .signal(&docker, ProcessControlSignal::Interrupt)
+                            .await?;
+                    }
+
+                    ProcessControlSignal::Terminate => {
+                        container
+                            .signal(&docker, ProcessControlSignal::Terminate)
+                            .await?;
+                    }
                 }
             }
             ClientPacket::ProcessClose(pkt) => {

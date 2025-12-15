@@ -43,7 +43,7 @@ async fn main() {
     let docker = match Docker::connect_with_local_defaults() {
         Ok(docker) => docker,
         Err(e) => {
-            logger.err(&format!("failed to connect to docker daemon: {e}!"), "");
+            logger.err(format!("failed to connect to docker daemon: {e}!"), "");
             exit(1);
         }
     };
@@ -60,10 +60,10 @@ async fn main() {
         .route("/", get(|| async { "Hello world!" }))
         .route(
             "/ws",
-            get(|ws| {
+            get(async |ws| {
                 let route = Arc::new(routes::ws::BoaWsRoute::new(server_state));
 
-                return route.ws_handler(ws);
+                route.ws_handler(ws)
             }),
         );
 
@@ -84,14 +84,11 @@ async fn main() {
         "",
     );
 
-    match axum::serve(listener, router).await {
-        Ok(_) => {
-            logger.log("all done, exiting", "");
-            exit(0);
-        }
-        Err(e) => {
-            logger.err(format!("failed to serve router: {e}!"), "");
-            exit(1);
-        }
+    if let Err(e) = axum::serve(listener, router).await {
+        logger.err(format!("failed to serve router: {e}!"), "");
+        exit(1);
     }
+
+    logger.log("all done, exiting", "");
+    exit(0);
 }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["boa-server","library/boa-core"]
+members = ["boa-server", "boa-www", "library/boa-core"]
 
 [workspace.dependencies]
 boa-core = { path = "./library/boa-core/" }
