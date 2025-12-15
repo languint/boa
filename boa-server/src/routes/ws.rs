@@ -24,6 +24,7 @@ use tokio::{
 
 use crate::{container::BoaContainer, logger::Logger, state::ShareableServerState};
 
+#[derive(Clone)]
 pub struct BoaWsRoute {
     logger: Arc<Logger>,
     server_state: ShareableServerState,
@@ -53,6 +54,8 @@ struct UploadState {
 
 impl BoaWsRoute {
     pub fn ws_handler(self: Arc<Self>, ws: WebSocketUpgrade) -> impl IntoResponse {
+        self.logger.log("new connection opened", "");
+
         ws.on_upgrade(move |socket| {
             let this = Arc::clone(&self);
             async move {
@@ -130,29 +133,20 @@ impl BoaWsRoute {
                                 }
 
                                 ClientPacket::UploadFinish { .. } => {
-                                    // 1. We take the state here. upload_state becomes None.
                                     if let Some(state) = upload_state.take() {
                                         let docker = self.server_state.lock().await.docker.clone();
 
-                                        // Retrieve the container instance
                                         let container = {
                                             let state_lock = self.server_state.lock().await;
                                             state_lock.containers.get(&state.container_id).cloned()
                                         };
 
-                                        // DELETE THIS BLOCK START: if let Some(state) = upload_state.take() {
-                                        // The state is already available in the 'state' variable from the outer if.
-
-                                        // Ensure we have a container before spawning
                                         if let Some(container) = container {
                                             let docker = docker.clone();
-                                            // Extract fields from state to move into the async block
+
                                             let temp_file = state.temp_file;
                                             let container_path = state.container_path;
                                             let file_name = state.file_name;
-
-                                            // dbg!(&temp_file.path());
-                                            // dbg!(&container_path);
 
                                             tokio::spawn(async move {
                                                 if let Err(e) = container
@@ -160,19 +154,16 @@ impl BoaWsRoute {
                                                         &docker,
                                                         temp_file.path(),
                                                         &container_path,
-                                                        &file_name, // Use the extracted file_name
+                                                        &file_name,
                                                     )
                                                     .await
                                                 {
                                                     eprintln!("upload failed: {e}");
                                                 }
-                                                // temp_file is dropped here, deleting the temp file from host
                                             });
                                         } else {
                                             eprintln!("Container not found for upload");
                                         }
-
-                                        // DELETE THIS BLOCK END: }
                                     }
                                 }
 
@@ -329,7 +320,7 @@ impl BoaWsRoute {
 
                         let docker = docker.clone();
                         tokio::spawn(async move {
-                            match container.run(&docker, file_path, tx.clone()).await {
+                            match container.exec_file(&docker, file_path, tx.clone()).await {
                                 Ok(exit_code) => {
                                     let _ =
                                         tx.send(WsOutbound::Packet(ServerPacket::ProcessEvent(

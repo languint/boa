@@ -4,24 +4,21 @@ use axum::body::Bytes;
 
 use boa_core::packets::{
     client::process::ProcessControlSignal,
-    server::{
-        ServerPacket,
-        process::{ProcessEventPacket, ProcessOutputPacket},
-    },
+    server::{ServerPacket, process::ProcessOutputPacket},
 };
 use futures_util::stream::StreamExt;
 
 use bollard::{
     Docker, body_full,
-    exec::{CreateExecOptions, StartExecOptions, StartExecResults},
+    exec::{CreateExecOptions, StartExecResults},
     query_parameters::{
-        CreateContainerOptionsBuilder, InspectContainerOptions, InspectContainerOptionsBuilder,
-        StartContainerOptions, StopContainerOptionsBuilder, UploadToContainerOptionsBuilder,
+        CreateContainerOptionsBuilder, InspectContainerOptions, StartContainerOptions,
+        StopContainerOptionsBuilder, UploadToContainerOptionsBuilder,
     },
-    secret::{ContainerCreateBody, ContainerState, ContainerStateStatusEnum},
+    secret::{ContainerCreateBody, ContainerStateStatusEnum},
 };
 
-use owo_colors::Style;
+use owo_colors::{OwoColorize, Style};
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
@@ -44,7 +41,7 @@ impl BoaContainer {
 
         let logger = Logger::new(format!("[boa-server#.{container_name}]"));
 
-        logger.log("creating new container", "");
+        logger.log("creating new container...", "");
 
         let container_options = CreateContainerOptionsBuilder::new()
             .name(&container_name)
@@ -75,7 +72,7 @@ impl BoaContainer {
             .await
             .map_err(|e| format!("failed to create new docker container {container_name}: {e}!"))?;
 
-        logger.log("created new container", "");
+        logger.log("created container", "");
 
         Ok((
             container.id,
@@ -102,6 +99,7 @@ impl BoaContainer {
     }
 
     pub async fn start(&mut self, docker: &Docker) -> Result<(), String> {
+        self.logger.log("starting container...", "");
         match docker
             .start_container(&self.container_id, Some(StartContainerOptions::default()))
             .await
@@ -126,23 +124,32 @@ impl BoaContainer {
             _ => unreachable!(),
         };
 
+        self.logger
+            .log(format!("stopping with signal {}...", signal.bold()), "");
+
         docker
             .stop_container(
                 &self.container_id,
                 Some(StopContainerOptionsBuilder::new().signal(signal).build()),
             )
             .await
-            .map_err(|e| format!("failed to stop container: {e}"))
+            .map_err(|e| format!("failed to stop container: {e}"))?;
+
+        self.logger.log("container stopped", "");
+
+        Ok(())
     }
 }
 
 impl BoaContainer {
-    pub async fn run(
+    pub async fn exec_file(
         &mut self,
         docker: &Docker,
         file_path: String,
         sender: UnboundedSender<WsOutbound>,
     ) -> Result<i64, String> {
+        self.logger.log("creating exec_file command...", "");
+
         let inspect = docker
             .inspect_container(&self.container_id, None::<InspectContainerOptions>)
             .await
@@ -159,26 +166,6 @@ impl BoaContainer {
             return Err("container is not started".to_string());
         }
 
-        self.logger.log("creating exec", "");
-
-        // let mkdir_exec = docker
-        //     .create_exec(
-        //         &self.container_id,
-        //         CreateExecOptions {
-        //             cmd: Some(vec!["mkdir", "-p", "/src"]),
-        //             attach_stdout: Some(true),
-        //             attach_stderr: Some(true),
-        //             ..Default::default()
-        //         },
-        //     )
-        //     .await
-        //     .map_err(|e| format!("failed to create mkdir exec: {e}"))?;
-
-        // docker
-        //     .start_exec(&mkdir_exec.id, None::<StartExecOptions>)
-        //     .await
-        //     .map_err(|e| format!("failed to exec mkdir exec: {e}"))?;
-
         let exec = docker
             .create_exec(
                 &self.container_id,
@@ -194,14 +181,16 @@ impl BoaContainer {
             .await
             .map_err(|e| format!("failed to create exec: {e}"))?;
 
-        self.logger.log("starting exec", "");
+        self.logger.log("created exec_file command", "");
 
         self.executing = true;
 
-        let mut output = docker
+        let output = docker
             .start_exec(&exec.id, None)
             .await
             .map_err(|e| format!("failed to start exec: {e}"))?;
+
+        self.logger.log("running exec_file command...", "");
 
         match output {
             StartExecResults::Attached { mut output, .. } => {
@@ -247,8 +236,13 @@ impl BoaContainer {
 
         let exit_code = inspect.exit_code.unwrap_or(-1);
 
-        self.logger
-            .log("exec finished", &format!("exit_code={exit_code}"));
+        self.logger.log(
+            format!(
+                "run of exec_file command finished, got exit_code={}",
+                exit_code.bold()
+            ),
+            "",
+        );
 
         Ok(exit_code)
     }
@@ -262,6 +256,16 @@ impl BoaContainer {
         container_path: &str,
         file_name: &str,
     ) -> Result<(), String> {
+        self.logger.log(
+            format!(
+                "started upload of file {} from {:?} to {:?}",
+                file_name.bold(),
+                host_path.bold(),
+                container_path.bold()
+            ),
+            "",
+        );
+
         let mut tar_data = Vec::new();
         {
             let mut file =
@@ -284,6 +288,18 @@ impl BoaContainer {
                 body_full(tar_data.into()),
             )
             .await
-            .map_err(|e| format!("docker upload failed: {e}"))
+            .map_err(|e| format!("docker upload failed: {e}"))?;
+
+        self.logger.log(
+            format!(
+                "upload of file {} from {:?} to {:?} finished",
+                file_name.bold(),
+                host_path.bold(),
+                container_path.bold()
+            ),
+            "",
+        );
+
+        Ok(())
     }
 }
