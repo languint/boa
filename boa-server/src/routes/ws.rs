@@ -1,21 +1,26 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade},
+    extract::ws::{Message, WebSocketUpgrade},
     response::IntoResponse,
 };
 
 use boa_core::packets::{
-    client::ClientPacket,
+    client::{ClientPacket, process::ProcessControlSignal},
     server::{
         ServerPacket,
         error::{ServerError, ServerErrorPacket},
-        process::{ProcessCloseResultPacket, ProcessOpenResultPacket},
+        process::{ProcessCloseResultPacket, ProcessEventPacket, ProcessOpenResultPacket},
     },
 };
 
 use bollard::query_parameters::RemoveContainerOptions;
-use owo_colors::{OwoColorize, Style};
+use futures_util::{SinkExt, StreamExt};
+
+use tokio::{
+    io::AsyncWriteExt,
+    sync::mpsc::{self, UnboundedSender},
+};
 
 use crate::{container::BoaContainer, logger::Logger, state::ShareableServerState};
 
@@ -33,93 +38,178 @@ impl BoaWsRoute {
     }
 }
 
+pub enum WsOutbound {
+    Packet(ServerPacket),
+    Pong(Vec<u8>),
+}
+
+struct UploadState {
+    container_id: String,
+    temp_file: tempfile::NamedTempFile,
+    container_path: String,
+    remaining: u64,
+}
+
 impl BoaWsRoute {
     pub async fn ws_handler(self: Arc<Self>, ws: WebSocketUpgrade) -> impl IntoResponse {
-        self.logger.log("new connection opened", "");
-
         ws.on_upgrade(move |socket| {
             let this = Arc::clone(&self);
-            async move { this.handle_socket(socket).await }
-        })
-    }
+            async move {
+                let (mut ws_tx, mut ws_rx) = socket.split();
 
-    async fn handle_socket(&self, mut socket: WebSocket) {
-        while let Some(msg) = socket.recv().await {
-            if let Ok(msg) = msg {
-                match msg {
-                    Message::Text(t) => {
-                        self.logger.log(format!("recieved text data {t:?}"), "");
+                let (packet_tx, mut packet_rx) = mpsc::unbounded_channel::<WsOutbound>();
 
-                        match serde_json::from_str::<ClientPacket>(&t) {
-                            Ok(json) => {
-                                self.logger
-                                    .log(format!("recieved client packet {json:?}!"), "");
-                                match self.handle_client_packet(json, &mut socket).await {
-                                    Ok(_) => {}
-                                    Err(e) => {
-                                        self.logger.err(
-                                            format!("failed to handle client packet: {e}!"),
-                                            "",
-                                        );
+                let writer = tokio::spawn(async move {
+                    while let Some(msg) = packet_rx.recv().await {
+                        match msg {
+                            WsOutbound::Packet(packet) => {
+                                let Ok(text) = serde_json::to_string(&packet) else {
+                                    continue;
+                                };
+                                if ws_tx.send(Message::Text(text.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                            WsOutbound::Pong(p) => {
+                                if ws_tx.send(Message::Pong(p.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                });
+
+                let mut upload_state: Option<UploadState> = None;
+
+                while let Some(msg) = ws_rx.next().await {
+                    let Ok(msg) = msg else { break };
+
+                    match msg {
+                        Message::Text(t) => {
+                            let packet = match serde_json::from_str::<ClientPacket>(&t) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    let _ = packet_tx.send(WsOutbound::Packet(
+                                        ServerPacket::ServerError(ServerErrorPacket {
+                                            err: ServerError::InvalidJson,
+                                            message: e.to_string(),
+                                        }),
+                                    ));
+                                    break;
+                                }
+                            };
+
+                            match packet {
+                                ClientPacket::UploadStart {
+                                    container_id,
+                                    path,
+                                    size,
+                                } => {
+                                    if upload_state.is_some() {
+                                        let _ = packet_tx.send(WsOutbound::Packet(
+                                            ServerPacket::ServerError(ServerErrorPacket {
+                                                err: ServerError::UploadAlreadyInProgress,
+                                                message: "upload already in progress".into(),
+                                            }),
+                                        ));
+                                        continue;
+                                    }
+
+                                    let temp_file = tempfile::NamedTempFile::new()
+                                        .map_err(|e| e.to_string())
+                                        .unwrap();
+
+                                    upload_state = Some(UploadState {
+                                        container_id,
+                                        temp_file,
+                                        container_path: path,
+                                        remaining: size,
+                                    });
+                                }
+
+                                ClientPacket::UploadFinish { .. } => {
+                                    if let Some(state) = upload_state.take() {
+                                        let docker = self.server_state.lock().await.docker.clone();
+                                        let container = {
+                                            let state_lock = self.server_state.lock().await;
+                                            state_lock.containers.get(&state.container_id).cloned()
+                                        };
+
+                                        if let Some(container) = container {
+                                            let host_path = state.temp_file.path().to_path_buf();
+                                            let container_path = state.container_path.clone();
+
+                                            tokio::spawn(async move {
+                                                if let Err(e) = container
+                                                    .upload_file(
+                                                        &docker,
+                                                        &host_path,
+                                                        &container_path,
+                                                    )
+                                                    .await
+                                                {
+                                                    eprintln!("upload failed: {e}");
+                                                }
+                                            });
+                                        }
+                                    }
+                                }
+
+                                other => {
+                                    if let Err(e) =
+                                        this.handle_client_packet(other, packet_tx.clone()).await
+                                    {
+                                        this.logger.err(e, "~!");
                                         break;
                                     }
-                                };
+                                }
                             }
-                            Err(e) => {
-                                self.logger.err(format!("recieved invalid json {e}!"), "~!");
-                                match socket
-                                    .send(Message::Close(Some(CloseFrame {
-                                        code: 1007,
-                                        reason: Utf8Bytes::from(e.to_string()),
-                                    })))
+                        }
+
+                        Message::Binary(bytes) => {
+                            if let Some(state) = upload_state.as_mut() {
+                                let mut file = tokio::fs::OpenOptions::new()
+                                    .write(true)
+                                    .open(state.temp_file.path())
                                     .await
-                                {
-                                    Ok(_) => {
-                                        self.logger.log_style(
-                                            "sent close frame with code 1007",
-                                            Style::new().bright_yellow(),
-                                            "",
-                                        );
+                                    .unwrap();
 
-                                        break;
-                                    }
-                                    Err(e) => {
-                                        self.logger
-                                            .err(format!("failed to send close frame: {e}!"), "~!");
-                                        break;
-                                    }
-                                };
+                                if let Err(e) = file.write_all(&bytes).await {
+                                    let _ = packet_tx.send(WsOutbound::Packet(
+                                        ServerPacket::ServerError(ServerErrorPacket {
+                                            err: ServerError::UploadFailed,
+                                            message: e.to_string(),
+                                        }),
+                                    ));
+                                    upload_state = None;
+                                    continue;
+                                }
+
+                                state.remaining =
+                                    state.remaining.saturating_sub(bytes.len() as u64);
+                            } else {
+                                let _ = packet_tx.send(WsOutbound::Packet(
+                                    ServerPacket::ServerError(ServerErrorPacket {
+                                        err: ServerError::UnexpectedBinaryFrame,
+                                        message: "binary frame without upload".into(),
+                                    }),
+                                ));
                             }
                         }
-                    }
-                    Message::Binary(b) => {
-                        self.logger.log(format!("recieved binary data {b:?}"), "");
-                    }
-                    Message::Ping(p) => {
-                        self.logger.log(format!("recieved ping {p:?}"), "");
-                        if socket.send(Message::Pong(p)).await.is_err() {
-                            self.logger.err(format!("failed to send pong!"), "~!");
-                            break;
+
+                        Message::Ping(p) => {
+                            let _ = packet_tx.send(WsOutbound::Pong(p.to_vec()));
                         }
-                    }
-                    Message::Pong(_) => {
-                        self.logger.log("recieved pong, ignoring", "");
-                    }
-                    Message::Close(_) => {
-                        self.logger.log("recieved close, ignoring", "");
+
+                        Message::Close(_) => break,
+                        _ => {}
                     }
                 }
-            } else {
-                self.logger.err(
-                    format!("failed to read msg: {}!", unsafe {
-                        msg.unwrap_err_unchecked()
-                    },),
-                    "~!",
-                );
-            }
-        }
 
-        self.logger.log("connection closed", "");
+                drop(packet_tx);
+                let _ = writer.await;
+            }
+        })
     }
 }
 
@@ -127,94 +217,132 @@ impl BoaWsRoute {
     async fn handle_client_packet(
         &self,
         packet: ClientPacket,
-        socket: &mut WebSocket,
+        tx: UnboundedSender<WsOutbound>,
     ) -> Result<(), String> {
         match packet {
-            ClientPacket::ControlSignal(packet) => {}
+            ClientPacket::ProcessOpen(_) => {
+                let (container_id, container) = {
+                    let state = self.server_state.lock().await;
+                    BoaContainer::new(&state.docker, state.container_prefix.clone()).await?
+                };
 
-            ClientPacket::Open(packet) => {
-                let mut state = self.server_state.lock().await;
-
-                let (container_id, container) =
-                    BoaContainer::new(&state.docker, state.container_prefix.clone()).await?;
-
-                state.containers.insert(container_id.clone(), container);
-
-                let packet =
-                    ServerPacket::ProcessOpenResult(ProcessOpenResultPacket { container_id });
-
-                let serialized_packet = serde_json::to_string::<ServerPacket>(&packet)
-                    .map_err(|e| format!("failed to serialize packet: {e}"))?;
-
-                self.logger.log(
-                    format!("sending packet: {}", serialized_packet.to_string()),
-                    "",
-                );
-
-                socket
-                    .send(Message::Text(Utf8Bytes::from(serialized_packet)))
+                self.server_state
+                    .lock()
                     .await
-                    .map_err(|e| format!("failed to send open result packet: {e}"))?;
+                    .containers
+                    .insert(container_id.clone(), container);
+
+                tx.send(WsOutbound::Packet(ServerPacket::ProcessOpenResult(
+                    ProcessOpenResultPacket { container_id },
+                )))
+                .ok();
             }
-            ClientPacket::Close(client_packet) => {
-                let mut state = self.server_state.lock().await;
+            ClientPacket::ProcessControlSignal(pkt) => {
+                let (mut container, docker) = {
+                    let state = self.server_state.lock().await;
+                    (
+                        state
+                            .containers
+                            .get(&pkt.container_id)
+                            .cloned()
+                            .ok_or("invalid container id")?,
+                        state.docker.clone(),
+                    )
+                };
 
-                if state.containers.contains_key(&client_packet.container_id) {
-                    state.containers.remove(&client_packet.container_id);
+                match pkt.control_signal {
+                    ProcessControlSignal::Start => {
+                        tx.send(WsOutbound::Packet(ServerPacket::ProcessEvent(
+                            ProcessEventPacket::Started,
+                        )))
+                        .ok();
 
-                    self.logger.log(
-                        format!(
-                            "recieved packet to stop close {}",
-                            client_packet.container_id.bold()
-                        ),
-                        "",
-                    );
+                        tokio::spawn(async move {
+                            match container.start(&docker).await {
+                                Ok(_) => {
+                                    tx.send(WsOutbound::Packet(ServerPacket::ProcessEvent(
+                                        ProcessEventPacket::Started,
+                                    )))
+                                    .ok();
+                                }
+                                Err(e) => {
+                                    tx.send(WsOutbound::Packet(ServerPacket::ServerError(
+                                        ServerErrorPacket {
+                                            err: ServerError::ProcessStartFailed,
+                                            message: format!("failed to start: {e}"),
+                                        },
+                                    )))
+                                    .ok();
+                                }
+                            }
+                        });
 
-                    let success = state
-                        .docker
-                        .remove_container(
-                            &client_packet.container_id,
-                            Some(RemoveContainerOptions::default()),
-                        )
-                        .await
-                        .is_ok();
+                        // tokio::spawn(async move {
+                        //     match container
+                        //         .run(&docker, "main.py".to_string(), tx.clone())
+                        //         .await
+                        //     {
+                        //         Ok(code) => {
+                        //             tx.send(WsOutbound::Packet(ServerPacket::ProcessEvent(
+                        //                 ProcessEventPacket::Finished { exit_code: code },
+                        //             )))
+                        //             .ok();
+                        //         }
+                        //         Err(e) => {
+                        //             tx.send(WsOutbound::Packet(ServerPacket::ServerError(
+                        //                 ServerErrorPacket {
+                        //                     err: ServerError::ProcessStartFailed,
+                        //                     message: e,
+                        //                 },
+                        //             )))
+                        //             .ok();
+                        //         }
+                        //     }
+                        // });
+                    }
 
-                    let packet = serde_json::to_string(&ServerPacket::ProcessCloseResult(
-                        ProcessCloseResultPacket { success },
-                    ))
-                    .map_err(|e| format!("failed to serialize packet: {e}"))?;
+                    // ProcessControlSignal::Interrupt => {
+                    //     container
+                    //         .signal(&docker, ProcessControlSignal::Interrupt)
+                    //         .await?;
+                    // }
 
-                    socket
-                        .send(Message::Text(Utf8Bytes::from(packet)))
-                        .await
-                        .map_err(|e| format!("failed to send error packet: {e}"))?;
-                } else {
-                    let err_packet =
-                        serde_json::to_string(&ServerPacket::ServerError(ServerErrorPacket {
-                            err: ServerError::InvalidContainerId,
-                            message: format!(
-                                "container with id {} was not found",
-                                client_packet.container_id
-                            ),
-                        }))
-                        .map_err(|e| format!("failed to serialize packet: {e}"))?;
-
-                    self.logger.log_style(
-                        format!(
-                            "container with id {} was not found",
-                            client_packet.container_id.bold()
-                        ),
-                        Style::new().bright_yellow(),
-                        "~?",
-                    );
-
-                    socket
-                        .send(Message::Text(Utf8Bytes::from(err_packet)))
-                        .await
-                        .map_err(|e| format!("failed to send error packet: {e}"))?;
+                    // ProcessControlSignal::Terminate => {
+                    //     container
+                    //         .signal(&docker, ProcessControlSignal::Terminate)
+                    //         .await?;
+                    // }
+                    _ => {}
                 }
             }
+            ClientPacket::ProcessClose(pkt) => {
+                let docker = self.server_state.lock().await.docker.clone();
+
+                self.server_state
+                    .lock()
+                    .await
+                    .containers
+                    .remove(&pkt.container_id);
+
+                let success = docker
+                    .remove_container(
+                        &pkt.container_id,
+                        Some(RemoveContainerOptions {
+                            force: true,
+                            ..Default::default()
+                        }),
+                    )
+                    .await
+                    .is_ok();
+
+                tx.send(WsOutbound::Packet(ServerPacket::ProcessCloseResult(
+                    ProcessCloseResultPacket { success },
+                )))
+                .ok();
+            }
+            ClientPacket::UploadStart { .. } | ClientPacket::UploadFinish { .. } => unreachable!(),
         }
+
         Ok(())
     }
 }

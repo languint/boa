@@ -1,18 +1,24 @@
-pub mod close;
-pub mod control_signal;
-pub mod open;
+pub mod process;
 
 use serde::{Deserialize, Serialize};
 
-use crate::packets::client::{
-    close::ClosePacket, control_signal::ControlSignalPacket, open::OpenPacket,
+use crate::packets::client::process::{
+    ProcessClosePacket, ProcessControlSignalPacket, ProcessOpenPacket,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum ClientPacket {
-    ControlSignal(ControlSignalPacket),
+    ProcessOpen(ProcessOpenPacket),
+    ProcessClose(ProcessClosePacket),
+    ProcessControlSignal(ProcessControlSignalPacket),
 
-    Open(OpenPacket),
-    Close(ClosePacket),
+    UploadStart {
+        container_id: String,
+        path: String,
+        size: u64,
+    },
+    UploadFinish {
+        container_id: String,
+    },
 }

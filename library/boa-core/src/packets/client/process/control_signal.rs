@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ControlSignal {
+pub enum ProcessControlSignal {
+    /// Send a start request to the container
+    Start,
+    /// Send a exec request to the container
+    Exec(String),
     /// Send a SIGINT to the container
     Interrupt,
     /// Send a SIGTERM to the container
@@ -9,7 +13,7 @@ pub enum ControlSignal {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ControlSignalPacket {
+pub struct ProcessControlSignalPacket {
     pub container_id: String,
-    pub control_signal: ControlSignal,
+    pub control_signal: ProcessControlSignal,
 }
