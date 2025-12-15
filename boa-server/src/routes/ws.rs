@@ -288,29 +288,6 @@ impl BoaWsRoute {
                                 }
                             }
                         });
-
-                        // tokio::spawn(async move {
-                        //     match container
-                        //         .run(&docker, "main.py".to_string(), tx.clone())
-                        //         .await
-                        //     {
-                        //         Ok(code) => {
-                        //             tx.send(WsOutbound::Packet(ServerPacket::ProcessEvent(
-                        //                 ProcessEventPacket::Finished { exit_code: code },
-                        //             )))
-                        //             .ok();
-                        //         }
-                        //         Err(e) => {
-                        //             tx.send(WsOutbound::Packet(ServerPacket::ServerError(
-                        //                 ServerErrorPacket {
-                        //                     err: ServerError::ProcessStartFailed,
-                        //                     message: e,
-                        //                 },
-                        //             )))
-                        //             .ok();
-                        //         }
-                        //     }
-                        // });
                     }
 
                     ProcessControlSignal::Exec(file_path) => {

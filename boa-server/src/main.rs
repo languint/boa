@@ -26,7 +26,7 @@ async fn main() {
 
     let server_port = match server_port.parse::<u32>() {
         Ok(port) => port,
-        Err(e) => {
+        Err(_) => {
             logger.err("failed to parse BOA_SERVER_PORT!", "~!");
             exit(1);
         }
