@@ -13,7 +13,7 @@ use futures_util::stream::StreamExt;
 
 use bollard::{
     Docker, body_full,
-    exec::{CreateExecOptions, StartExecResults},
+    exec::{CreateExecOptions, StartExecOptions, StartExecResults},
     query_parameters::{
         CreateContainerOptionsBuilder, InspectContainerOptions, InspectContainerOptionsBuilder,
         StartContainerOptions, StopContainerOptionsBuilder, UploadToContainerOptionsBuilder,
@@ -54,6 +54,8 @@ impl BoaContainer {
             image: Some("python:3.11-slim".to_string()),
             tty: Some(true),
             open_stdin: Some(true),
+
+            working_dir: Some("/src".to_string()),
 
             cmd: Some(vec![
                 "tail".to_string(),
@@ -159,6 +161,24 @@ impl BoaContainer {
 
         self.logger.log("creating exec", "");
 
+        // let mkdir_exec = docker
+        //     .create_exec(
+        //         &self.container_id,
+        //         CreateExecOptions {
+        //             cmd: Some(vec!["mkdir", "-p", "/src"]),
+        //             attach_stdout: Some(true),
+        //             attach_stderr: Some(true),
+        //             ..Default::default()
+        //         },
+        //     )
+        //     .await
+        //     .map_err(|e| format!("failed to create mkdir exec: {e}"))?;
+
+        // docker
+        //     .start_exec(&mkdir_exec.id, None::<StartExecOptions>)
+        //     .await
+        //     .map_err(|e| format!("failed to exec mkdir exec: {e}"))?;
+
         let exec = docker
             .create_exec(
                 &self.container_id,
@@ -240,24 +260,16 @@ impl BoaContainer {
         docker: &Docker,
         host_path: &Path,
         container_path: &str,
+        file_name: &str,
     ) -> Result<(), String> {
         let mut tar_data = Vec::new();
-
         {
-            let mut file = std::fs::File::open(host_path)
-                .map_err(|e| format!("open host file failed: {e}"))?;
-
+            let mut file =
+                File::open(host_path).map_err(|e| format!("open host file failed: {e}"))?;
             let mut builder = tar::Builder::new(&mut tar_data);
-
             builder
-                .append_file(
-                    Path::new(container_path)
-                        .file_name()
-                        .ok_or("invalid container path")?,
-                    &mut file,
-                )
+                .append_file(file_name, &mut file)
                 .map_err(|e| format!("tar append failed: {e}"))?;
-
             builder.finish().map_err(|e| e.to_string())?;
         }
 
@@ -266,13 +278,7 @@ impl BoaContainer {
                 &self.container_id,
                 Some(
                     UploadToContainerOptionsBuilder::new()
-                        .path(unsafe {
-                            Path::new(container_path)
-                                .parent()
-                                .unwrap_or(Path::new("/"))
-                                .to_str()
-                                .unwrap_unchecked()
-                        })
+                        .path(container_path)
                         .build(),
                 ),
                 body_full(tar_data.into()),

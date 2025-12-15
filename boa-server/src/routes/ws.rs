@@ -47,6 +47,7 @@ struct UploadState {
     container_id: String,
     temp_file: tempfile::NamedTempFile,
     container_path: String,
+    file_name: String,
     remaining: u64,
 }
 
@@ -122,41 +123,56 @@ impl BoaWsRoute {
                                     upload_state = Some(UploadState {
                                         container_id,
                                         temp_file,
-                                        container_path: path,
+                                        container_path: "/src".to_string(),
+                                        file_name: path,
                                         remaining: size,
                                     });
                                 }
 
                                 ClientPacket::UploadFinish { .. } => {
+                                    // 1. We take the state here. upload_state becomes None.
                                     if let Some(state) = upload_state.take() {
                                         let docker = self.server_state.lock().await.docker.clone();
+
+                                        // Retrieve the container instance
                                         let container = {
                                             let state_lock = self.server_state.lock().await;
                                             state_lock.containers.get(&state.container_id).cloned()
                                         };
 
-                                        if let Some(state) = upload_state.take() {
-                                            let container = container.clone();
-                                            let docker =
-                                                self.server_state.lock().await.docker.clone();
-                                            let temp_file = state.temp_file; // move the NamedTempFile
+                                        // DELETE THIS BLOCK START: if let Some(state) = upload_state.take() {
+                                        // The state is already available in the 'state' variable from the outer if.
+
+                                        // Ensure we have a container before spawning
+                                        if let Some(container) = container {
+                                            let docker = docker.clone();
+                                            // Extract fields from state to move into the async block
+                                            let temp_file = state.temp_file;
                                             let container_path = state.container_path;
+                                            let file_name = state.file_name;
+
+                                            // dbg!(&temp_file.path());
+                                            // dbg!(&container_path);
 
                                             tokio::spawn(async move {
                                                 if let Err(e) = container
-                                                    .expect("Container should be valid")
                                                     .upload_file(
                                                         &docker,
                                                         temp_file.path(),
                                                         &container_path,
+                                                        &file_name, // Use the extracted file_name
                                                     )
                                                     .await
                                                 {
                                                     eprintln!("upload failed: {e}");
                                                 }
-                                                // temp_file is dropped here, after upload
+                                                // temp_file is dropped here, deleting the temp file from host
                                             });
+                                        } else {
+                                            eprintln!("Container not found for upload");
                                         }
+
+                                        // DELETE THIS BLOCK END: }
                                     }
                                 }
 

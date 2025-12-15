@@ -86,7 +86,12 @@ fn App() -> Html {
                 return;
             };
 
-            let code = b"print('hello from container')\n";
+            let code = b"
+import time
+
+for i in range(10):
+    print('*'*i)
+            ";
 
             let start = ClientPacket::UploadStart {
                 container_id: cid.clone(),
