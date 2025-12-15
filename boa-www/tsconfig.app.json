@@ -6,6 +6,9 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "types": ["vite/client"],
+    "paths": {
+      "@boa-wasm": ["../library/boa-www-backend/pkg"]
+    },
     "skipLibCheck": true,
 
     /* Bundler mode */

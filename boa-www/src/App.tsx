@@ -1,4 +1,13 @@
+import { useEffect } from "react";
+import { useWasm } from "./hooks/use-wasm";
+
 export function App() {
+  const { wasm } = useWasm();
+
+  useEffect(() => {
+    console.log(wasm?.add(1, 2));
+  }, [wasm]);
+
   return (
     <div className="App flex flex-col gap-2 p-8">
       <h1>boa-www</h1>

@@ -1,2 +1,4 @@
 **/target/
+boa-www/node_modules/
 boa-www/dist/
+boa-www-backend/pkg/
