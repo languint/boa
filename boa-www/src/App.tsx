@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { RunnerState, type AppState } from "./hooks/app-state";
 import { useAppState } from "./hooks/use-app-state";
+import { Editor } from "@monaco-editor/react";
 
 type PushLog = (log: string, err?: boolean) => void;
 
@@ -146,9 +147,11 @@ const buttons = [
             break;
           case "ProcessOutput":
             if (packet.data.StdOut) {
-              pushLog(packet.data.StdOut);
+              packet.data.StdOut.split("\n").forEach((o: string) => pushLog(o));
             } else if (packet.data.StdErr) {
-              pushLog(packet.data.StdErr, true);
+              packet.data.StdErr.split("\n").forEach((o: string) =>
+                pushLog(o, true),
+              );
             }
             break;
           default:
@@ -225,12 +228,29 @@ export function App() {
           </button>
         ))}
       </div>
-      <div className="rounded-md border border-neutral-700 flex flex-col grow p-2">
-        {logs.map(([l, e], i) => (
-          <p key={i} className={`${e ? "text-red-500" : ""}`}>
-            {l}
-          </p>
-        ))}
+      <div className="flex grow gap-2 w-full min-h-0">
+        <div className="w-1/2 rounded-md border border-neutral-700 flex flex-col p-2 overflow-auto">
+          {logs.map(([l, e], i) => (
+            <p key={i} className={e ? "text-red-500" : ""}>
+              {l}
+            </p>
+          ))}
+        </div>
+
+        <div className="w-1/2 rounded-md border border-neutral-700 flex flex-col min-h-0">
+          <Editor
+            height="100%"
+            width="100%"
+            language="python"
+            theme="vs-dark"
+            value={state.code}
+            onChange={(v) => state?.setAppState?.({ ...state, code: v ?? "" })}
+            options={{
+              minimap: { enabled: false },
+              fontSize: 14,
+            }}
+          />
+        </div>
       </div>
     </div>
   );
