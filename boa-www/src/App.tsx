@@ -20,8 +20,8 @@ const buttons = [
         pushLog(`recieved message: ${e.data}`);
       };
 
-      state.ws.onerror = (e) => {
-        pushLog(`recieved error: ${e}`);
+      state.ws.onerror = () => {
+        pushLog("recieved server error", true);
       };
     },
   },
@@ -36,6 +36,7 @@ const buttons = [
         const packet = JSON.parse(e.data);
 
         if (packet.type && packet.type == "ProcessOpenResult") {
+          pushLog(`connected to hosted runner \`${packet.data.container_id}\``);
           state.setAppState!({
             ...state,
             runnerId: packet.data.container_id,
@@ -56,17 +57,118 @@ const buttons = [
   {
     display: "Start",
     onClick: (state: AppState | undefined, pushLog: PushLog) => {
-      if (!state?.runnerId) return;
-      pushLog(`sending start runner packet to ${state?.runnerId}`);
+      if (state?.runnerState !== RunnerState.Connected) return;
+      pushLog(`requesting runner start...`);
+
+      state.ws!.onmessage = (e) => {
+        const packet = JSON.parse(e.data);
+
+        if (packet.type && packet.type == "ProcessEvent") {
+          if (packet.data === "Started") {
+            pushLog(`hosted runner \`${state.runnerId}\` is started`);
+            state.setAppState!({
+              ...state,
+              runnerState: RunnerState.Started,
+            });
+          } else {
+            pushLog("recieved invalid server packet", true);
+          }
+        } else {
+          pushLog("failed to start hosted runner", true);
+        }
+      };
+
+      const packet = {
+        type: "ProcessControlSignal",
+        data: {
+          container_id: state.runnerId,
+          control_signal: "Start",
+        },
+      };
+
+      state.ws?.send(JSON.stringify(packet));
     },
   },
   {
     display: "Upload",
-    onClick: (state: AppState | undefined, pushLog: PushLog) => {},
+    onClick: (state: AppState | undefined, pushLog: PushLog) => {
+      if (state?.runnerState !== RunnerState.Started) return;
+      pushLog(`requesting runner upload...`);
+
+      const startPacket = {
+        type: "UploadStart",
+        data: {
+          container_id: state.runnerId,
+          path: "main.py",
+          size: state.code.length,
+        },
+      };
+
+      state.ws?.send(JSON.stringify(startPacket));
+
+      const textEncoder = new TextEncoder();
+
+      const codePacket = textEncoder.encode(state.code);
+
+      state.ws?.send(codePacket);
+
+      const finishPacket = {
+        type: "UploadFinish",
+        data: {
+          container_id: state.runnerId,
+        },
+      };
+
+      state.ws?.send(JSON.stringify(finishPacket));
+
+      pushLog(`runner upload finished`);
+    },
   },
   {
     display: "Execute",
-    onClick: (state: AppState | undefined, pushLog: PushLog) => {},
+    onClick: (state: AppState | undefined, pushLog: PushLog) => {
+      if (state?.runnerState !== RunnerState.Started) return;
+
+      state.ws!.onmessage = (e) => {
+        const packet = JSON.parse(e.data);
+        console.log(packet);
+        switch (packet.type) {
+          case "ProcessEvent":
+            if (packet.data === "Started") {
+              pushLog(`runner ${state.runnerId} is starting execution`);
+            } else if (packet.data === "TimedOut") {
+              pushLog(`runner executed timed out`, true);
+            } else if (packet.data.Finished) {
+              pushLog(
+                `runner finished execution with exit code \`${packet.data.Finished.exit_code}\``,
+              );
+            }
+            break;
+          case "ProcessOutput":
+            if (packet.data.StdOut) {
+              pushLog(packet.data.StdOut);
+            } else if (packet.data.StdErr) {
+              pushLog(packet.data.StdErr, true);
+            }
+            break;
+          default:
+            pushLog(`unhandled packet type: ${packet.type}!`, true);
+        }
+      };
+
+      const execPacket = {
+        type: "ProcessControlSignal",
+        data: {
+          container_id: state.runnerId,
+          control_signal: { Exec: "main.py" },
+        },
+      };
+
+      state.ws?.send(JSON.stringify(execPacket));
+
+      pushLog(`requested execution`);
+      pushLog(`---`);
+    },
   },
   {
     display: "Stop (SIGINT)",
@@ -84,7 +186,7 @@ export function App() {
   const state = useAppState();
 
   const pushLog = (log: string, err?: boolean) => {
-    setLogs([...logs, [log, err ?? false]]);
+    setLogs((prev) => [...prev, [log, err ?? false]]);
   };
 
   return (
@@ -123,13 +225,11 @@ export function App() {
           </button>
         ))}
       </div>
-      <div className="rounded-md border border-neutral-700 flex flex-col gap-2 grow p-2">
+      <div className="rounded-md border border-neutral-700 flex flex-col grow p-2">
         {logs.map(([l, e], i) => (
-          <div className={`w-full h-8 ${e ? "bg-red-500/80" : ""}`}>
-            <p key={i} className="h-8 w-full">
-              {l}
-            </p>
-          </div>
+          <p key={i} className={`${e ? "text-red-500" : ""}`}>
+            {l}
+          </p>
         ))}
       </div>
     </div>
