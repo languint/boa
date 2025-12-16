@@ -75,7 +75,7 @@ impl BoaContainer {
         logger.log("created container", "");
 
         Ok((
-            container.id,
+            container_name.clone(),
             BoaContainer {
                 logger,
                 container_id: container_name,
