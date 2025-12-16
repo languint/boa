@@ -93,34 +93,38 @@ const buttons = [
   {
     display: "Upload",
     onClick: (state: AppState | undefined, pushLog: PushLog) => {
-      if (state?.runnerState !== RunnerState.Started) return;
+      if (
+        state!.runnerState !== RunnerState.Started &&
+        state!.runnerState !== RunnerState.Finished
+      )
+        return;
       pushLog(`requesting runner upload...`);
 
       const startPacket = {
         type: "UploadStart",
         data: {
-          container_id: state.runnerId,
+          container_id: state!.runnerId,
           path: "main.py",
-          size: state.code.length,
+          size: state!.code.length,
         },
       };
 
-      state.ws?.send(JSON.stringify(startPacket));
+      state!.ws?.send(JSON.stringify(startPacket));
 
       const textEncoder = new TextEncoder();
 
-      const codePacket = textEncoder.encode(state.code);
+      const codePacket = textEncoder.encode(state!.code);
 
-      state.ws?.send(codePacket);
+      state!.ws?.send(codePacket);
 
       const finishPacket = {
         type: "UploadFinish",
         data: {
-          container_id: state.runnerId,
+          container_id: state!.runnerId,
         },
       };
 
-      state.ws?.send(JSON.stringify(finishPacket));
+      state!.ws?.send(JSON.stringify(finishPacket));
 
       pushLog(`runner upload finished`);
     },
@@ -128,21 +132,26 @@ const buttons = [
   {
     display: "Execute",
     onClick: (state: AppState | undefined, pushLog: PushLog) => {
-      if (state?.runnerState !== RunnerState.Started) return;
+      if (
+        state!.runnerState !== RunnerState.Started &&
+        state!.runnerState !== RunnerState.Finished
+      )
+        return;
 
-      state.ws!.onmessage = (e) => {
+      state!.ws!.onmessage = (e) => {
         const packet = JSON.parse(e.data);
         console.log(packet);
         switch (packet.type) {
           case "ProcessEvent":
             if (packet.data === "Started") {
-              pushLog(`runner ${state.runnerId} is starting execution`);
+              pushLog(`runner ${state!.runnerId} is starting execution`);
             } else if (packet.data === "TimedOut") {
               pushLog(`runner executed timed out`, true);
             } else if (packet.data.Finished) {
               pushLog(
                 `runner finished execution with exit code \`${packet.data.Finished.exit_code}\``,
               );
+              state!.runnerState = RunnerState.Finished;
             }
             break;
           case "ProcessOutput":
@@ -162,12 +171,12 @@ const buttons = [
       const execPacket = {
         type: "ProcessControlSignal",
         data: {
-          container_id: state.runnerId,
+          container_id: state!.runnerId,
           control_signal: { Exec: "main.py" },
         },
       };
 
-      state.ws?.send(JSON.stringify(execPacket));
+      state!.ws?.send(JSON.stringify(execPacket));
 
       pushLog(`requested execution`);
       pushLog(`---`);
@@ -175,11 +184,44 @@ const buttons = [
   },
   {
     display: "Stop (SIGINT)",
-    onClick: (state: AppState | undefined, pushLog: PushLog) => {},
+    onClick: (state: AppState | undefined, pushLog: PushLog) => {
+      state!.ws?.send(
+        JSON.stringify({
+          type: "ProcessControlSignal",
+          data: {
+            container_id: state?.runnerId,
+            control_signal: "Interrupt",
+          },
+        }),
+      );
+
+      pushLog("sent SIGINT to runner");
+    },
   },
   {
     display: "Stop (SIGTERM)",
-    onClick: (state: AppState | undefined, pushLog: PushLog) => {},
+    onClick: (state: AppState | undefined, pushLog: PushLog) => {
+      state!.ws?.send(
+        JSON.stringify({
+          type: "ProcessControlSignal",
+          data: {
+            container_id: state?.runnerId,
+            control_signal: "Interrupt",
+          },
+        }),
+      );
+
+      pushLog("sent SIGTERM to runner");
+    },
+  },
+  {
+    display: "Disconnect",
+    onClick: (state: AppState | undefined, pushLog: PushLog) => {
+      if (state?.runnerState !== RunnerState.Finished) return;
+
+      pushLog(`disconnecting from hosted runner \`${state?.runnerId}\``);
+      state!.ws!.close();
+    },
   },
 ];
 
