@@ -1,227 +1,58 @@
 import { useState } from "react";
-import { RunnerState, type AppState } from "./hooks/app-state";
+import { type AppState } from "./hooks/app-state";
 import { useAppState } from "./hooks/use-app-state";
 import { Editor } from "@monaco-editor/react";
-
-type PushLog = (log: string, err?: boolean) => void;
+import {
+  connect,
+  create,
+  disconnect,
+  execute,
+  start,
+  stop,
+  upload,
+  type Log,
+} from "./runner";
 
 const buttons = [
   {
     display: "Connect",
-    onClick: (state: AppState | undefined, pushLog: PushLog) => {
-      if (!state?.url) return;
-
-      pushLog(`connecting to websocket server at ${state.url}`);
-
-      state.ws = new WebSocket(state.url);
-
-      state.runnerState = RunnerState.Connected;
-
-      state.ws.onmessage = (e) => {
-        pushLog(`recieved message: ${e.data}`);
-      };
-
-      state.ws.onerror = () => {
-        pushLog("recieved server error", true);
-      };
-    },
+    onClick: (state: AppState | undefined, pushLog: Log) =>
+      connect(state, pushLog),
   },
   {
     display: "Create",
-    onClick: async (state: AppState | undefined, pushLog: PushLog) => {
-      if (state?.runnerState != RunnerState.Connected) return;
-
-      pushLog("requesting hosted runner...");
-
-      state.ws!.onmessage = (e) => {
-        const packet = JSON.parse(e.data);
-
-        if (packet.type && packet.type == "ProcessOpenResult") {
-          pushLog(`connected to hosted runner \`${packet.data.container_id}\``);
-          state.setAppState!({
-            ...state,
-            runnerId: packet.data.container_id,
-          });
-        } else {
-          pushLog("failed to get hosted runner", true);
-        }
-      };
-
-      const packet = {
-        type: "ProcessOpen",
-        data: {},
-      };
-
-      state.ws?.send(JSON.stringify(packet));
-    },
+    onClick: (state: AppState | undefined, pushLog: Log) =>
+      create(state, pushLog),
   },
   {
     display: "Start",
-    onClick: (state: AppState | undefined, pushLog: PushLog) => {
-      if (state?.runnerState !== RunnerState.Connected) return;
-      pushLog(`requesting runner start...`);
-
-      state.ws!.onmessage = (e) => {
-        const packet = JSON.parse(e.data);
-
-        if (packet.type && packet.type == "ProcessEvent") {
-          if (packet.data === "Started") {
-            pushLog(`hosted runner \`${state.runnerId}\` is started`);
-            state.setAppState!({
-              ...state,
-              runnerState: RunnerState.Started,
-            });
-          } else {
-            pushLog("recieved invalid server packet", true);
-          }
-        } else {
-          pushLog("failed to start hosted runner", true);
-        }
-      };
-
-      const packet = {
-        type: "ProcessControlSignal",
-        data: {
-          container_id: state.runnerId,
-          control_signal: "Start",
-        },
-      };
-
-      state.ws?.send(JSON.stringify(packet));
-    },
+    onClick: (state: AppState | undefined, pushLog: Log) =>
+      start(state, pushLog),
   },
   {
     display: "Upload",
-    onClick: (state: AppState | undefined, pushLog: PushLog) => {
-      if (
-        state!.runnerState !== RunnerState.Started &&
-        state!.runnerState !== RunnerState.Finished
-      )
-        return;
-      pushLog(`requesting runner upload...`);
-
-      const startPacket = {
-        type: "UploadStart",
-        data: {
-          container_id: state!.runnerId,
-          path: "main.py",
-          size: state!.code.length,
-        },
-      };
-
-      state!.ws?.send(JSON.stringify(startPacket));
-
-      const textEncoder = new TextEncoder();
-
-      const codePacket = textEncoder.encode(state!.code);
-
-      state!.ws?.send(codePacket);
-
-      const finishPacket = {
-        type: "UploadFinish",
-        data: {
-          container_id: state!.runnerId,
-        },
-      };
-
-      state!.ws?.send(JSON.stringify(finishPacket));
-
-      pushLog(`runner upload finished`);
-    },
+    onClick: (state: AppState | undefined, pushLog: Log) =>
+      upload(state, pushLog),
   },
   {
     display: "Execute",
-    onClick: (state: AppState | undefined, pushLog: PushLog) => {
-      if (
-        state!.runnerState !== RunnerState.Started &&
-        state!.runnerState !== RunnerState.Finished
-      )
-        return;
-
-      state!.ws!.onmessage = (e) => {
-        const packet = JSON.parse(e.data);
-        console.log(packet);
-        switch (packet.type) {
-          case "ProcessEvent":
-            if (packet.data === "Started") {
-              pushLog(`runner ${state!.runnerId} is starting execution`);
-            } else if (packet.data === "TimedOut") {
-              pushLog(`runner executed timed out`, true);
-            } else if (packet.data.Finished) {
-              pushLog(
-                `runner finished execution with exit code \`${packet.data.Finished.exit_code}\``,
-              );
-              state!.runnerState = RunnerState.Finished;
-            }
-            break;
-          case "ProcessOutput":
-            if (packet.data.StdOut) {
-              packet.data.StdOut.split("\n").forEach((o: string) => pushLog(o));
-            } else if (packet.data.StdErr) {
-              packet.data.StdErr.split("\n").forEach((o: string) =>
-                pushLog(o, true),
-              );
-            }
-            break;
-          default:
-            pushLog(`unhandled packet type: ${packet.type}!`, true);
-        }
-      };
-
-      const execPacket = {
-        type: "ProcessControlSignal",
-        data: {
-          container_id: state!.runnerId,
-          control_signal: { Exec: "main.py" },
-        },
-      };
-
-      state!.ws?.send(JSON.stringify(execPacket));
-
-      pushLog(`requested execution`);
-      pushLog(`---`);
-    },
+    onClick: (state: AppState | undefined, pushLog: Log) =>
+      execute(state, pushLog),
   },
   {
     display: "Stop (SIGINT)",
-    onClick: (state: AppState | undefined, pushLog: PushLog) => {
-      state!.ws?.send(
-        JSON.stringify({
-          type: "ProcessControlSignal",
-          data: {
-            container_id: state?.runnerId,
-            control_signal: "Interrupt",
-          },
-        }),
-      );
-
-      pushLog("sent SIGINT to runner");
-    },
+    onClick: (state: AppState | undefined, pushLog: Log) =>
+      stop("SIGINT", state, pushLog),
   },
   {
     display: "Stop (SIGTERM)",
-    onClick: (state: AppState | undefined, pushLog: PushLog) => {
-      state!.ws?.send(
-        JSON.stringify({
-          type: "ProcessControlSignal",
-          data: {
-            container_id: state?.runnerId,
-            control_signal: "Interrupt",
-          },
-        }),
-      );
-
-      pushLog("sent SIGTERM to runner");
-    },
+    onClick: (state: AppState | undefined, pushLog: Log) =>
+      stop("SIGTERM", state, pushLog),
   },
   {
     display: "Disconnect",
-    onClick: (state: AppState | undefined, pushLog: PushLog) => {
-      if (state?.runnerState !== RunnerState.Finished) return;
-
-      pushLog(`disconnecting from hosted runner \`${state?.runnerId}\``);
-      state!.ws!.close();
-    },
+    onClick: (state: AppState | undefined, pushLog: Log) =>
+      disconnect(state, pushLog),
   },
 ];
 
