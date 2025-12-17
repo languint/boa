@@ -29,6 +29,20 @@ and run the frontend with
 cd boa-www && npm install && npm run dev
 ```
 
+### Alternative
+
+If you have bash installed in your terminal, you can run the apps with
+
+```sh
+./dev-server.sh
+```
+
+and 
+
+```sh
+./dev-web.sh
+```
+
 Navigate to [localhost:5173](http://localhost:5173), and write your code in the editor.
 
 ## Managing runners
